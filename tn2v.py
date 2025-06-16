@@ -9,6 +9,8 @@ import time
 from sklearn.metrics.pairwise import euclidean_distances as skpw
 import utils
 
+import torch
+
 
 def tn2v(main_directory, project_name, embedding_dimension, n2v_param_array, l0_array, l1_array, l2_array, eta_array, LEN,
     cpu_gpu='cpu', nbhd_regen=None, data_pointcloud=None, data_distance_matrix=None, data_correlation_matrix=None, mbs_array=None,
@@ -77,42 +79,6 @@ def tn2v(main_directory, project_name, embedding_dimension, n2v_param_array, l0_
     
     return X
 
-def lite(project):
-    sys.exit("Temporarily disabled.")
-    out = {}
-    def PWDM(data):
-        if isinstance(data,pd.DataFrame):
-            data = data.values
-        try:
-            data.shape[0]
-        except:
-            data = np.array(data)
-        return skpw(data)
-   
-    F = pd.read_csv('./tn2v_output/'+project+'/mega_out.csv',index_col=0).transpose()
-    G = pd.read_csv('./tn2v_output/'+project+'/_original_data.csv',index_col=0)
-    P = pd.read_csv('./tn2v_output/'+project+'/data_array.csv',index_col=0)
-    print_data_i = [i for i in range(len(P['pdata'].values)) if P['pdata'].values[i] != 0]
-    T = PWDM(G)
-    i_index = -1
-    IN = None
-    while IN is None:
-        i = print_data_i[i_index]
-        try:
-            IN = pd.read_csv('./tn2v_output/'+project+'/w1_at_'+str(i).zfill(12)+'.csv',index_col=0)
-        except:
-            i_index -= 1
-            continue
-    S = PWDM(IN)
-    out['l2_norm'] = np.linalg.norm(S/np.mean(S)-T/np.mean(T))
-    out['sg_loss'] = F['sg_loss'].values[-1]
-    if 'wa_loss_1' in F.columns:
-        out['wa_loss_1'] = np.mean([x for x in F['wa_loss_1'].values[int(.90*F.shape[0]):-1] if x != 0])
-    if 'wa_loss_2' in F.columns:
-        out['wa_loss_2'] = np.mean([x for x in F['wa_loss_2'].values[int(.90*F.shape[0]):-1] if x != 0])
-    return out
-
-
 class TN2V:
     def __init__(self,
                  project_name,
@@ -123,15 +89,16 @@ class TN2V:
                  target_pd=None,
                  initial_W1=None,
                  name_regen=False,
-                 cpu_gpu='cpu',
+                 device='cpu',
                  reciprocal_gamma=0.0001,
                  reciprocal_nu=1.0,
                  verbose=1):
         
-        self.homology_mode = cpu_gpu
+        self.device = device
         self.name = project_name
         self.name_regen = name_regen
         self.embed_dim = embed_dim
+        self.softmax = torch.nn.Softmax()
         
         if data_pointcloud is not None:
             self.target_pointcloud = data_pointcloud
@@ -201,14 +168,6 @@ class TN2V:
         self.computational_package_imported = False
         self.PH_function = None
         
-    def softmax(self, x):
-        '''
-        Return the softmax of a vector.
-        '''
-        e_x = np.exp(x - np.max(x))
-        return e_x / e_x.sum(axis=0)   
-    
-    
     def PWDM(self,data):
         '''
         Compute the pairwise distance matrix (quickly) of a pointcloud.
@@ -339,7 +298,6 @@ class TN2V:
             # • columns = every coordinate of every point (sorted points first, then coords).
             
             for coordinate in range(L):
-                
                 # s (in the outer loop) is the sequential nontrivial cycle index.
                 # We are interested in the rows with index 2s and 2s+1 (birth and death coord of s-th generator).
                 # ua*L+coordinate selects the ua-th point and then the current loop permutes through its coordinates.
@@ -621,16 +579,16 @@ class TN2V:
     
     def gen_PD(self,D):
         if not self.computational_package_imported:
-            if self.homology_mode == 'gpu':
+            if self.device == 'gpu':
                 import ripserplusplus as rpp
                 self.computational_package_imported = True
                 self.PH_function = rpp
-            elif self.homology_mode == 'cpu':
+            elif self.device == 'cpu':
                 import gudhi
                 self.computational_package_imported = True
                 self.PH_function = gudhi
         
-        if self.homology_mode == 'gpu':
+        if self.device == 'gpu':
             def radius_of_simplex(s):
                 return np.max([D[s[i]][s[j]] for i in range(len(s)) for j in range(i+1,len(s))])
             X = self.PH_function.run('--format distance --dim '+str(max(self.HD)),D)
@@ -649,7 +607,7 @@ class TN2V:
                                                                  for pair in rpp_hom_dict[i]]}
             return PD_di
         
-        elif self.homology_mode == 'cpu':
+        elif self.device == 'cpu':
             rips_complex = self.PH_function.RipsComplex(distance_matrix=D)
             rips_simplex_tree = rips_complex.create_simplex_tree(max_dimension = max(self.HD)+1)
             rips_simplex_tree.compute_persistence()
